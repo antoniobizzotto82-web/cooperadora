@@ -1,16 +1,35 @@
 workflows:
-  android-workflow:
-    name: Android Debug Build
+  android-auto-build:
+    name: Compilar APK Cooperadora
     max_build_duration: 60
     environment:
       java: 17
+      node: 20
+      flutter: stable
     scripts:
-      - name: Set Android SDK location
+      - name: Detectar tecnología y compilar APK
         script: |
-          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/local.properties"
-      - name: Build Android debug APK
-        script: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          if [ -f "pubspec.yaml" ]; then
+            echo "Proyecto Flutter detectado"
+            flutter pub get
+            flutter build apk --debug
+          elif [ -f "gradlew" ]; then
+            echo "Proyecto Android Nativo detectado"
+            echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/local.properties"
+            chmod +x gradlew
+            ./gradlew assembleDebug
+          elif [ -f "package.json" ]; then
+            echo "Proyecto Web/Capacitor detectado"
+            npm install
+            npm run build || true
+            if [ -d "android" ]; then
+              cd android
+              chmod +x gradlew
+              ./gradlew assembleDebug
+            fi
+          else
+            echo "No se encontró pubspec.yaml, gradlew ni package.json en la raíz"
+            exit 1
+          fi
     artifacts:
-      - app/build/outputs/**/*.apk
+      - "**/*.apk"
