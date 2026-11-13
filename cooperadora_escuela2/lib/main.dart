@@ -451,145 +451,78 @@ class HistoryPage extends StatefulWidget {
   @override
   State<HistoryPage> createState() => _HistoryPageState();
 }
+
 class _HistoryPageState extends State<HistoryPage> {
+  final GlobalKey _receiptKey = GlobalKey();
+
+  Future<void> shareReceipt(Map<String, Object?> payment) async {
+    try {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+
+      await Future.delayed(const Duration(milliseconds: 200));
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      final dateStr = DateFormat('dd/MM/yyyy HH:mm').format(DateTime.parse(payment['date'] as String));
+      final text = 'COMPROBANTE DE COOPERADORA\n$schoolName\n\n'
+          'Recibo N.º: ${payment['receiptNo']}\n'
+          'Fecha: $dateStr\n'
+          'Tutor/a: ${payment['tutorName']}\n'
+          'Alumno/a: ${payment['studentName']}\n'
+          'Importe: ${money(payment['amount'] as num)}\n'
+          'Medio: ${payment['method']}\n'
+          '${payment['note'] != null && (payment['note'] as String).isNotEmpty ? 'Obs: ${payment['note']}\n' : ''}'
+          '\n¡Muchas gracias por colaborar!';
+
+      final phone = phoneDigits(payment['tutorPhone'] as String);
+      if (phone.isNotEmpty) {
+        final url = Uri.parse('https://wa.me/$phone?text=${Uri.encodeComponent(text)}');
+        if (await canLaunchUrl(url)) {
+          await launchUrl(url, mode: LaunchMode.externalApplication);
+          return;
+        }
+      }
+      await Share.share(text);
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al compartir: $e')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) => FutureBuilder(
     future: AppDb.instance.payments(),
     builder: (context, snap) {
       if (!snap.hasData) return const Center(child: CircularProgressIndicator());
       final rows = snap.data!;
-      if (rows.isEmpty) return const Center(child: Text('Todavía no hay pagos registrados.'));
-      return ListView.builder(padding: const EdgeInsets.all(10), itemCount: rows.length, itemBuilder: (context, i) {
-        final r = rows[i];
-        final date = DateFormat('dd/MM/yyyy HH:mm').format(DateTime.parse(r['date'] as String));
-        return Card(child: ListTile(
-          leading: CircleAvatar(backgroundColor: gold, child: Text('${r['receiptNo']}', style: const TextStyle(color: navy, fontWeight: FontWeight.bold))),
-          title: Text('Comprobante N.º ${(r['receiptNo'] as int).toString().padLeft(4, '0')} · ${money(r['amount'] as num)}'),
-          subtitle: Text('${r['tutorName']} · ${r['method']}\n$date'),
-          isThreeLine: true,
-          trailing: PopupMenuButton<String>(
-            onSelected: (v) => v == 'wa' ? sendWhatsApp(r) : shareReceipt(r),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'wa', child: Text('Agradecer por WhatsApp')),
-              PopupMenuItem(value: 'share', child: Text('Compartir comprobante base')),
-            ],
-          ),
-        ));
-      });
+      if (rows.isEmpty) return const Center(child: Text('No hay pagos registrados todavía.'));
+      return ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: rows.length,
+        itemBuilder: (context, i) {
+          final p = rows[i];
+          final dateStr = DateFormat('dd/MM/yyyy HH:mm').format(DateTime.parse(p['date'] as String));
+          return Card(
+            margin: const EdgeInsets.symmetric(vertical: 6),
+            child: ListTile(
+              title: Text('Recibo N.º ${p['receiptNo']} - ${money(p['amount'] as num)}'),
+              subtitle: Text('Tutor: ${p['tutorName']}\nAlumno: ${p['studentName']}\nFecha: $dateStr (${p['method']})'),
+              isThreeLine: true,
+              trailing: IconButton(
+                icon: const Icon(Icons.share, color: navy),
+                onPressed: () => shareReceipt(p),
+                tooltip: 'Compartir comprobante',
+              ),
+            ),
+          );
+        },
+      );
     },
   );
-
-  Future<void> sendWhatsApp(Map<String, Object?> r) async {
-    final phone = phoneDigits('${r['tutorPhone']}');
-    if (phone.isEmpty) return;
-    final no = (r['receiptNo'] as int).toString().padLeft(4, '0');
-    final msg = '¡Muchas gracias, ${r['tutorName']}! La Comisión Cooperadora de $schoolName agradece tu colaboración de ${money(r['amount'] as num)} por ${r['method'].toString().toLowerCase()}. Comprobante N.º $no. ¡Gracias por ayudar a nuestros estudiantes!';
-    final uri = Uri.parse('https://wa.me/$phone?text=${Uri.encodeComponent(msg)}');
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se pudo abrir WhatsApp. Revisá el número y la instalación.')));
-    }
-  }
-
-  Future<void> shareReceipt(Map<String, Object?> r) async {
-    await Navigator.push(context, MaterialPageRoute(builder: (_) => ReceiptPreviewPage(payment: r)));
-  }
 }
-
-class ReceiptPreviewPage extends StatefulWidget {
-  final Map<String, Object?> payment;
-  const ReceiptPreviewPage({super.key, required this.payment});
-  @override
-  State<ReceiptPreviewPage> createState() => _ReceiptPreviewPageState();
-}
-
-class _ReceiptPreviewPageState extends State<ReceiptPreviewPage> {
-  final GlobalKey boundaryKey = GlobalKey();
-  bool sharing = false;
-
-  Future<void> shareImage() async {
-    setState(() => sharing = true);
-    try {
-      await WidgetsBinding.instance.endOfFrame;
-      final boundary = boundaryKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
-      final ui.Image image = await boundary.toImage(pixelRatio: 3);
-      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (bytes == null) throw Exception('No se pudo generar la imagen');
-      final dir = await getTemporaryDirectory();
-      final no = (widget.payment['receiptNo'] as int).toString().padLeft(4, '0');
-      final file = File(p.join(dir.path, 'comprobante_$no.png'));
-      await file.writeAsBytes(bytes.buffer.asUint8List());
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        text: 'Gracias por colaborar con $schoolName. Comprobante N.º $no.',
-        subject: 'Comprobante N.º $no - Cooperadora',
-      );
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No se pudo compartir: $e')));
-    } finally {
-      if (mounted) setState(() => sharing = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final r = widget.payment;
-    final no = (r['receiptNo'] as int).toString().padLeft(4, '0');
-    final date = DateFormat('dd/MM/yyyy HH:mm').format(DateTime.parse(r['date'] as String));
-    return Scaffold(
-      appBar: AppBar(title: const Text('Vista previa del comprobante')),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
-        Center(child: RepaintBoundary(
-          key: boundaryKey,
-          child: Container(
-            width: 360,
-            padding: const EdgeInsets.all(22),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFF8E8),
-              border: Border.all(color: gold, width: 5),
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8)],
-            ),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Text('COMPROBANTE DE COLABORACIÓN', textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: navy)),
-              const SizedBox(height: 5),
-              Text('N.º $no', style: const TextStyle(fontSize: 25, fontWeight: FontWeight.bold, color: gold)),
-              const Divider(color: gold, thickness: 2),
-              Image.asset('assets/images/fondo_cooperadora.jpg', height: 150, fit: BoxFit.contain),
-              const SizedBox(height: 8),
-              const Text('COMISIÓN COOPERADORA', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: navy)),
-              const Text(schoolName, textAlign: TextAlign.center, style: TextStyle(fontSize: 15, color: navy)),
-              const SizedBox(height: 18),
-              _receiptLine('Tutor/a', '${r['tutorName']}'),
-              _receiptLine('Alumno/a', '${r['studentName']}'),
-              _receiptLine('Fecha', date),
-              _receiptLine('Forma de pago', '${r['method']}'),
-              const SizedBox(height: 12),
-              const Text('IMPORTE RECIBIDO', style: TextStyle(fontSize: 13, color: navy)),
-              Text(money(r['amount'] as num), style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: navy)),
-              const SizedBox(height: 18),
-              const Text('¡Muchas gracias por su colaboración!\nSu aporte ayuda a seguir mejorando los beneficios para nuestros estudiantes.',
-                textAlign: TextAlign.center, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: navy)),
-              const SizedBox(height: 10),
-              const Divider(color: gold),
-              const Text('Comisión Cooperadora · San Luis', style: TextStyle(fontSize: 11, color: Colors.black54)),
-            ]),
-          ),
-        )),
-        const SizedBox(height: 18),
-        FilledButton.icon(onPressed: sharing ? null : shareImage,
-          icon: const Icon(Icons.share), label: Text(sharing ? 'Preparando...' : 'Compartir comprobante')),
-        const SizedBox(height: 8),
-        const Text('Podés elegir WhatsApp en el menú para enviárselo al tutor.', textAlign: TextAlign.center, style: TextStyle(color: Colors.black54)),
-      ]),
-    );
-  }
-}
-
-Widget _receiptLine(String label, String value) => Padding(
-  padding: const EdgeInsets.symmetric(vertical: 5),
-  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    SizedBox(width: 105, child: Text('$label:', style: const TextStyle(fontWeight: FontWeight.bold, color: navy))),
-    Expanded(child: Text(value, style: const TextStyle(color: navy))),
-  ]),
-);
